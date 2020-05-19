@@ -1,4 +1,4 @@
-use super::{IntoIter, IterMut, ThreadLocal};
+use super::{IntoIter, Iter, IterMut, ThreadLocal};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::panic::UnwindSafe;
@@ -95,6 +95,24 @@ impl<T: Send> CachedThreadLocal<T> {
         }
     }
 
+    /// Returns a iterator over the local values of all threads.
+    pub fn iter(&self) -> CachedIter<T>
+    where
+        T: Sync,
+    {
+        CachedIter {
+            local: unsafe {
+                self.local
+                    .get()
+                    .as_ref()
+                    .unchecked_unwrap()
+                    .as_ref()
+                    .map(|x| x.as_ref())
+            },
+            global: self.global.iter(),
+        }
+    }
+
     /// Returns a mutable iterator over the local values of all threads.
     ///
     /// Since this call borrows the `ThreadLocal` mutably, this operation can
@@ -154,6 +172,24 @@ impl<T: Send + fmt::Debug> fmt::Debug for CachedThreadLocal<T> {
 }
 
 impl<T: Send + UnwindSafe> UnwindSafe for CachedThreadLocal<T> {}
+
+/// An iterator over the contents of a `CachedThreadLocal`.
+pub struct CachedIter<'a, T: Send + Sync + 'a> {
+    local: Option<&'a T>,
+    global: Iter<'a, T>,
+}
+impl<'a, T: Send + Sync + 'a> Iterator for CachedIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        self.local.take().or_else(|| self.global.next())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.global.size_hint().0 + self.local.is_some() as usize;
+        (len, Some(len))
+    }
+}
 
 /// Mutable iterator over the contents of a `CachedThreadLocal`.
 pub struct CachedIterMut<'a, T: Send + 'a> {

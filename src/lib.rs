@@ -311,7 +311,18 @@ impl<T: Send> ThreadLocal<T> {
             table: self.table.load(Ordering::Relaxed),
         }
     }
-
+    /// Returns a iterator over the local values of all threads.
+    pub fn iter(&self) -> Iter<T>
+    where
+        T: Sync,
+    {
+        Iter {
+            remaining: *self.lock.lock().unwrap(),
+            index: 0,
+            table: self.table.load(Ordering::Relaxed),
+            marker: PhantomData,
+        }
+    }
     /// Returns a mutable iterator over the local values of all threads.
     ///
     /// Since this call borrows the `ThreadLocal` mutably, this operation can
@@ -371,6 +382,40 @@ impl<T: Send + fmt::Debug> fmt::Debug for ThreadLocal<T> {
 }
 
 impl<T: Send + UnwindSafe> UnwindSafe for ThreadLocal<T> {}
+/// An iterator over the contents of a `ThreadLocal`.
+pub struct Iter<'a, T: Send + Sync + 'a> {
+    remaining: usize,
+    index: usize,
+    table: *const Table<T>,
+    marker: PhantomData<&'a ThreadLocal<T>>,
+}
+
+impl<'a, T: Send + Sync> Iterator for Iter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        if self.remaining == 0 {
+            return None;
+        }
+        loop {
+            let entries = unsafe { &(*self.table).entries[..] };
+            while self.index < entries.len() {
+                let val = entries[self.index].data.get() as *const Option<Box<T>>;
+                self.index += 1;
+                if let Some(Some(val)) = unsafe { val.as_ref() } {
+                    self.remaining -= 1;
+                    return Some(val.as_ref());
+                }
+            }
+            self.index = 0;
+            self.table = unsafe { &**(*self.table).prev.as_ref().unchecked_unwrap() };
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
 
 struct RawIter<T: Send> {
     remaining: usize,
